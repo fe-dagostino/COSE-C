@@ -204,7 +204,7 @@ else()
 
   fetchcontent_declare(
     project_cn_cbor
-    GIT_REPOSITORY https://github.com/jimsch/cn-cbor.git
+    GIT_REPOSITORY https://github.com/fe-dagostino/cn-cbor.git
     GIT_TAG master)
 
   fetchcontent_getproperties(project_cn_cbor)
