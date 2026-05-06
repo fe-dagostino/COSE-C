@@ -197,46 +197,14 @@ include(sanitizers)
 # DEPENDENCIES
 ###############################################################################
 
-if(COSE_C_USE_FIND_PACKAGE)
-  find_package(cn-cbor)
-else()
-  include(FetchContent)
-
-  fetchcontent_declare(
-    project_cn_cbor
-    GIT_REPOSITORY https://github.com/fe-dagostino/cn-cbor.git
-    GIT_TAG master)
-
-  fetchcontent_getproperties(project_cn_cbor)
-  if(NOT project_cn_cbor_POPULATED)
-    fetchcontent_populate(project_cn_cbor)
-    set(CN_CBOR_FATAL_WARNINGS
-        OFF
-        CACHE BOOL "" FORCE)
-    set(CN_CBOR_COVERALLS
-        OFF
-        CACHE BOOL "" FORCE)
-    set(CN_CBOR_USE_CONTEXT
-        ${COSE_C_USE_CONTEXT}
-        CACHE BOOL "" FORCE)
-    set(BUILD_SHARED_LIBS
-        ${BUILD_SHARED_LIBS}
-        CACHE BOOL "" FORCE)
-    set(CN_CBOR_BUILD_DOCS
-        OFF
-        CACHE BOOL "" FORCE)
-    set(CN_CBOR_BUILD_TESTS
-        OFF
-        CACHE BOOL "" FORCE)
-    add_subdirectory(${project_cn_cbor_SOURCE_DIR} ${project_cn_cbor_BINARY_DIR} EXCLUDE_FROM_ALL)
-  endif()
-endif()
-
 if(BUILD_SHARED_LIBS)
   set(BUILD_STATIC_LIBS OFF)
 else()
   set(BUILD_STATIC_LIBS ON)
 endif()
+
+include(FetchContent)
+include(cn-cbor)
 
 if(COSE_C_USE_MBEDTLS)
   set(COSE_C_USE_OPENSSL OFF)
@@ -334,7 +302,7 @@ message(STATUS "COSE_C_VALGRIND_MEMORY_CHECK:....${COSE_C_VALGRIND_MEMORY_CHECK}
 if(COSE_C_USE_OPENSSL)
 message(STATUS "OpenSSL .........................${OPENSSL_LIBRARIES}")
 endif()
-message(STATUS "project_cn_cbor_SOURCE_DIR:......${project_cn_cbor_SOURCE_DIR}")
-message(STATUS "project_cn_cbor_BINARY_DIR:......${project_cn_cbor_BINARY_DIR}")
+message(STATUS "cn-cbor_SOURCE_DIR:..............${cn-cbor_SOURCE_DIR}")
+message(STATUS "cn-cbor_BINARY_DIR:..............${cn-cbor_BINARY_DIR}")
 message(STATUS "project_mbedtls_SOURCE_DIR:......${project_mbedtls_SOURCE_DIR}")
 message(STATUS "project_mbedtls_BINARY_DIR:......${project_mbedtls_BINARY_DIR}")
