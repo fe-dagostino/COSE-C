@@ -198,7 +198,7 @@ static bool HKDF_X(COSE *pCose,
 	bool fRet = false;
 	const cn_cbor *cn;
 	byte rgbDigest[512 / 8];
-	size_t cbDigest;
+	size_t cbDigest = (512 / 8);
 	byte *pbSecret = nullptr;
 	size_t cbSecret = 0;
 	COSE_KEY *pkeyMessage = NULL;
