@@ -93,98 +93,77 @@ bool AES_CCM_Decrypt(COSE_Enveloped *pcose,
 	size_t cbAuthData,
 	cose_errback *perr)
 {
-	EVP_CIPHER_CTX *ctx;
-	int cbOut;
-	byte *rgbOut = nullptr;
-	size_t NSize = 15 - (LSize / 8);
-	int outl = 0;
-	byte rgbIV[15] = {0};
-	const cn_cbor *pIV = nullptr;
-	const EVP_CIPHER *cipher;
+  EVP_CIPHER_CTX*   ctx       = nullptr;
+  int               cbOut     = 0;
+  byte*             rgbOut    = nullptr;
+  size_t            NSize     = 15 - (LSize / 8);
+  int               outl      = 0;
+  byte              rgbIV[15] = {0};
+  const cn_cbor*    pIV       = nullptr;
+  const EVP_CIPHER* cipher    = nullptr;
 #ifdef USE_CBOR_CONTEXT
-	cn_cbor_context *context = &pcose->m_message.m_allocContext;
+  cn_cbor_context*  context = &pcose->m_message.m_allocContext;
 #endif
 
-	ctx = EVP_CIPHER_CTX_new();
-	CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  ctx = EVP_CIPHER_CTX_new();
+  CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	//  Setup the IV/Nonce and put it into the message
+  pIV = _COSE_map_get_int(&pcose->m_message, COSE_Header_IV, COSE_BOTH, nullptr);
+  if ((pIV == nullptr) || (pIV->type != CN_CBOR_BYTES))
+  {
+    if (perr != nullptr)
+    {
+      perr->err = COSE_ERR_INVALID_PARAMETER;
+    }
 
-	pIV = _COSE_map_get_int(
-		&pcose->m_message, COSE_Header_IV, COSE_BOTH, nullptr);
-	if ((pIV == nullptr) || (pIV->type != CN_CBOR_BYTES)) {
-		if (perr != nullptr) {
-			perr->err = COSE_ERR_INVALID_PARAMETER;
-		}
+errorReturn:
+    if (rgbOut != nullptr)
+    { COSE_FREE(rgbOut, context); }
 
-	errorReturn:
-		if (rgbOut != nullptr) {
-			COSE_FREE(rgbOut, context);
-		}
-		EVP_CIPHER_CTX_free(ctx);
-		return false;
-	}
+    EVP_CIPHER_CTX_free(ctx);
+    return false;
+  }
 
-	CHECK_CONDITION(pIV->length == NSize, COSE_ERR_INVALID_PARAMETER);
-	memcpy(rgbIV, pIV->v.str, pIV->length);
+  CHECK_CONDITION(pIV->length == NSize, COSE_ERR_INVALID_PARAMETER);
+  memcpy(rgbIV, pIV->v.str, pIV->length);
 
-	//  Setup and run the OpenSSL code
+  switch (cbKey)
+  {
+    case 128 / 8: cipher = EVP_aes_128_ccm(); break;
+    case 192 / 8: cipher = EVP_aes_192_ccm(); break;
+    case 256 / 8: cipher = EVP_aes_256_ccm(); break;
+    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); break;
+  }
+  CHECK_CONDITION(EVP_DecryptInit_ex (ctx, cipher, nullptr, nullptr, nullptr), COSE_ERR_DECRYPT_FAILED);
 
-	switch (cbKey) {
-		case 128 / 8:
-			cipher = EVP_aes_128_ccm();
-			break;
+  TSize /= 8;	 // Comes in in bits not bytes.
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_L, (LSize / 8), 0), COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_TAG, TSize, (void *)&pbCrypto[cbCrypto - TSize]), COSE_ERR_DECRYPT_FAILED);
 
-		case 192 / 8:
-			cipher = EVP_aes_192_ccm();
-			break;
+  CHECK_CONDITION(EVP_DecryptInit_ex (ctx, 0, nullptr, pbKey, rgbIV), COSE_ERR_DECRYPT_FAILED);
 
-		case 256 / 8:
-			cipher = EVP_aes_256_ccm();
-			break;
+  CHECK_CONDITION(EVP_DecryptUpdate  (ctx, nullptr, &outl, nullptr, (int)cbCrypto - TSize), COSE_ERR_DECRYPT_FAILED);
 
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-	}
-	CHECK_CONDITION(EVP_DecryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr),
-		COSE_ERR_DECRYPT_FAILED);
+  cbOut = (int)cbCrypto - TSize;
+  rgbOut = (byte *)COSE_CALLOC(cbOut, 1, context);
+  CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	TSize /= 8;	 // Comes in in bits not bytes.
-	CHECK_CONDITION(
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_L, (LSize / 8), 0),
-		COSE_ERR_DECRYPT_FAILED);
-	// CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(&ctx, EVP_CTRL_CCM_SET_IVLEN, NSize,
-	// 0), COSE_ERR_DECRYPT_FAILED);
-	CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_TAG, TSize,
-						(void *)&pbCrypto[cbCrypto - TSize]),
-		COSE_ERR_DECRYPT_FAILED);
+  if (pbAuthData != nullptr && cbAuthData > 0)
+  { CHECK_CONDITION(EVP_DecryptUpdate(ctx, nullptr, &outl, pbAuthData, (int)cbAuthData), COSE_ERR_DECRYPT_FAILED); }
 
-	CHECK_CONDITION(EVP_DecryptInit_ex(ctx, 0, nullptr, pbKey, rgbIV),
-		COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION(EVP_DecryptUpdate(ctx, rgbOut, &outl, pbCrypto, (int)cbCrypto - TSize), COSE_ERR_DECRYPT_FAILED);
+  cbOut = outl;
 
-	CHECK_CONDITION(
-		EVP_DecryptUpdate(ctx, nullptr, &cbOut, nullptr, (int)cbCrypto - TSize),
-		COSE_ERR_DECRYPT_FAILED);
+  int final_outl = 0;
+  CHECK_CONDITION(EVP_DecryptFinal_ex(ctx, rgbOut + outl, &final_outl) == 1, COSE_ERR_CRYPTO_FAIL);
+  cbOut += final_outl;
 
-	cbOut = (int)cbCrypto - TSize;
-	rgbOut = (byte *)COSE_CALLOC(cbOut, 1, context);
-	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  EVP_CIPHER_CTX_free(ctx);
 
-	CHECK_CONDITION(
-		EVP_DecryptUpdate(ctx, nullptr, &outl, pbAuthData, (int)cbAuthData),
-		COSE_ERR_DECRYPT_FAILED);
+  pcose->pbContent = rgbOut;
+  pcose->cbContent = cbOut;
 
-	CHECK_CONDITION(
-		EVP_DecryptUpdate(ctx, rgbOut, &cbOut, pbCrypto, (int)cbCrypto - TSize),
-		COSE_ERR_DECRYPT_FAILED);
-
-	EVP_CIPHER_CTX_free(ctx);
-
-	pcose->pbContent = rgbOut;
-	pcose->cbContent = cbOut;
-
-	return true;
+  return true;
 }
 
 bool AES_CCM_Encrypt(COSE_Enveloped *pcose,
@@ -196,135 +175,109 @@ bool AES_CCM_Encrypt(COSE_Enveloped *pcose,
 	size_t cbAuthData,
 	cose_errback *perr)
 {
-	EVP_CIPHER_CTX *ctx;
-	int cbOut;
-	byte *rgbOut = nullptr;
-	size_t NSize = 15 - (LSize / 8);
-	int outl = 0;
-	const cn_cbor *cbor_iv = nullptr;
-	cn_cbor *cbor_iv_t = nullptr;
+  EVP_CIPHER_CTX*   ctx          = nullptr;
+  int               cbCiphertext = 0;
+  int               outl         = 0;
+  int               final_outl   = 0;
+  byte*             rgbOut       = nullptr;
+  size_t            NSize        = 15 - (LSize / 8);
+  const cn_cbor*    cbor_iv      = nullptr;
+  cn_cbor*          cbor_iv_t    = nullptr;
 #ifdef USE_CBOR_CONTEXT
-	cn_cbor_context *context = &pcose->m_message.m_allocContext;
+  cn_cbor_context*  context   = &pcose->m_message.m_allocContext;
 #endif
-	cn_cbor *cnTmp = nullptr;
-	const EVP_CIPHER *cipher;
-	byte rgbIV[16];
-	byte *pbIV = nullptr;
-	cn_cbor_errback cbor_error;
+  cn_cbor*          cnTmp     = nullptr;
+  const EVP_CIPHER* cipher    = nullptr;
+  byte              rgbIV[16] = {0};
+  byte*             pbIV      = nullptr;
+  cn_cbor_errback   cbor_error;
 
-	ctx = EVP_CIPHER_CTX_new();
-	CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
+  ctx = EVP_CIPHER_CTX_new();
+  CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
 
-	switch (cbKey * 8) {
-		case 128:
-			cipher = EVP_aes_128_ccm();
-			break;
+  switch (cbKey * 8)
+  {
+    case 128: cipher = EVP_aes_128_ccm(); break;
+    case 192: cipher = EVP_aes_192_ccm(); break;
+    case 256: cipher = EVP_aes_256_ccm(); break;
+    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+  }
 
-		case 192:
-			cipher = EVP_aes_192_ccm();
-			break;
+  cbor_iv = _COSE_map_get_int(&pcose->m_message, COSE_Header_IV, COSE_BOTH, perr);
+  if (cbor_iv == nullptr)
+  {
+    pbIV = (byte *)COSE_CALLOC(NSize, 1, context);
+    CHECK_CONDITION(pbIV != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-		case 256:
-			cipher = EVP_aes_256_ccm();
-			break;
+    rand_bytes(pbIV, NSize);
+    memcpy(rgbIV, pbIV, NSize);
 
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-	}
+    cbor_iv_t = cn_cbor_data_create2(pbIV, NSize, 0, CBOR_CONTEXT_PARAM_COMMA & cbor_error);
+    CHECK_CONDITION_CBOR(cbor_iv_t != nullptr, cbor_error);
+    pbIV = nullptr;
 
-	//  Setup the IV/Nonce and put it into the message
+    if (!_COSE_map_put(&pcose->m_message, COSE_Header_IV, cbor_iv_t, COSE_UNPROTECT_ONLY, perr))
+    { goto errorReturn; }
+    cbor_iv_t = nullptr;
+  }
+  else
+  {
+    CHECK_CONDITION(cbor_iv->type == CN_CBOR_BYTES, COSE_ERR_INVALID_PARAMETER);
+    CHECK_CONDITION(cbor_iv->length == NSize, COSE_ERR_INVALID_PARAMETER);
+    memcpy(rgbIV, cbor_iv->v.str, cbor_iv->length);
+  }
 
-	cbor_iv =
-		_COSE_map_get_int(&pcose->m_message, COSE_Header_IV, COSE_BOTH, perr);
-	if (cbor_iv == nullptr) {
-		pbIV = (byte *)COSE_CALLOC(NSize, 1, context);
-		CHECK_CONDITION(pbIV != nullptr, COSE_ERR_OUT_OF_MEMORY);
-		rand_bytes(pbIV, NSize);
-		memcpy(rgbIV, pbIV, NSize);
-		cbor_iv_t = cn_cbor_data_create2(
-			pbIV, NSize, 0, CBOR_CONTEXT_PARAM_COMMA & cbor_error);
-		CHECK_CONDITION_CBOR(cbor_iv_t != nullptr, cbor_error);
-		pbIV = nullptr;
+  CHECK_CONDITION(EVP_EncryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr), COSE_ERR_CRYPTO_FAIL);
 
-		if (!_COSE_map_put(&pcose->m_message, COSE_Header_IV, cbor_iv_t,
-				COSE_UNPROTECT_ONLY, perr)) {
-			goto errorReturn;
-		}
-		cbor_iv_t = nullptr;
-	}
-	else {
-		CHECK_CONDITION(
-			cbor_iv->type == CN_CBOR_BYTES, COSE_ERR_INVALID_PARAMETER);
-		CHECK_CONDITION(cbor_iv->length == NSize, COSE_ERR_INVALID_PARAMETER);
-		memcpy(rgbIV, cbor_iv->v.str, cbor_iv->length);
-	}
+  TSize /= 8;	 // Comes in in bits not bytes.
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_L, (LSize / 8), 0), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_TAG, TSize, nullptr), COSE_ERR_CRYPTO_FAIL);
 
-	//  Setup and run the OpenSSL code
+  CHECK_CONDITION(EVP_EncryptInit_ex(ctx, 0, nullptr, pbKey, rgbIV), COSE_ERR_CRYPTO_FAIL);
 
-	CHECK_CONDITION(EVP_EncryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr),
-		COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_EncryptUpdate(ctx, 0, &cbCiphertext, 0, (int)pcose->cbContent), COSE_ERR_CRYPTO_FAIL);
+  cbCiphertext = (int)pcose->cbContent;
 
-	TSize /= 8;	 // Comes in in bits not bytes.
-	CHECK_CONDITION(
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_L, (LSize / 8), 0),
-		COSE_ERR_CRYPTO_FAIL);
-	// CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(&ctx, EVP_CTRL_CCM_SET_IVLEN, NSize,
-	// 0), COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(
-		EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_TAG, TSize, nullptr),
-		COSE_ERR_CRYPTO_FAIL);	// Say we are doing an 8 byte tag
+  if (pbAuthData != nullptr && cbAuthData > 0)
+  { CHECK_CONDITION(EVP_EncryptUpdate(ctx, nullptr, &outl, pbAuthData, (int)cbAuthData), COSE_ERR_CRYPTO_FAIL); }
 
-	CHECK_CONDITION(EVP_EncryptInit_ex(ctx, 0, nullptr, pbKey, rgbIV),
-		COSE_ERR_CRYPTO_FAIL);
+  rgbOut = (byte *)COSE_CALLOC(cbCiphertext + TSize, 1, context);
+  CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	CHECK_CONDITION(EVP_EncryptUpdate(ctx, 0, &cbOut, 0, (int)pcose->cbContent),
-		COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_EncryptUpdate(ctx, rgbOut, &outl, pcose->pbContent, (int)pcose->cbContent), COSE_ERR_CRYPTO_FAIL);
 
-	CHECK_CONDITION(
-		EVP_EncryptUpdate(ctx, nullptr, &outl, pbAuthData, (int)cbAuthData),
-		COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_EncryptFinal_ex(ctx, rgbOut + outl, &final_outl), COSE_ERR_CRYPTO_FAIL);
 
-	rgbOut = (byte *)COSE_CALLOC(cbOut + TSize, 1, context);
-	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_GET_TAG, TSize, &rgbOut[cbCiphertext]), COSE_ERR_CRYPTO_FAIL);
 
-	CHECK_CONDITION(EVP_EncryptUpdate(ctx, rgbOut, &cbOut, pcose->pbContent,
-						(int)pcose->cbContent),
-		COSE_ERR_CRYPTO_FAIL);
+  // Create structural CBOR token representation using exact lengths
+  cnTmp = cn_cbor_data_create2(rgbOut, cbCiphertext + TSize, 0, CBOR_CONTEXT_PARAM_COMMA nullptr);
+  CHECK_CONDITION(cnTmp != nullptr, COSE_ERR_CBOR);
+  rgbOut = nullptr;
 
-	CHECK_CONDITION(
-		EVP_EncryptFinal_ex(ctx, &rgbOut[cbOut], &cbOut), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(_COSE_array_replace(&pcose->m_message, cnTmp, INDEX_BODY, CBOR_CONTEXT_PARAM_COMMA nullptr), COSE_ERR_CBOR);
+  cnTmp = nullptr;
 
-	CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_GET_TAG, TSize,
-						&rgbOut[pcose->cbContent]),
-		COSE_ERR_CRYPTO_FAIL);
-
-	cnTmp = cn_cbor_data_create2(rgbOut, (int)pcose->cbContent + TSize, 0,
-		CBOR_CONTEXT_PARAM_COMMA nullptr);
-	CHECK_CONDITION(cnTmp != nullptr, COSE_ERR_CBOR);
-	rgbOut = nullptr;
-
-	CHECK_CONDITION(_COSE_array_replace(&pcose->m_message, cnTmp, INDEX_BODY,
-						CBOR_CONTEXT_PARAM_COMMA nullptr),
-		COSE_ERR_CBOR);
-	cnTmp = nullptr;
-	EVP_CIPHER_CTX_free(ctx);
-	return true;
+  EVP_CIPHER_CTX_free(ctx);
+  return true;
 
 errorReturn:
-	if (pbIV != nullptr) {
-		COSE_FREE(pbIV, context);
-	}
-	if (cbor_iv_t != nullptr) {
-		COSE_FREE(cbor_iv_t, context);
-	}
-	if (rgbOut != nullptr) {
-		COSE_FREE(rgbOut, context);
-	}
-	if (cnTmp != nullptr) {
-		COSE_FREE(cnTmp, context);
-	}
-	EVP_CIPHER_CTX_free(ctx);
-	return false;
+  if (pbIV != nullptr)
+  { COSE_FREE(pbIV, context); }
+  
+  if (cbor_iv_t != nullptr)
+  { COSE_FREE(cbor_iv_t, context); }
+ 
+  if (rgbOut != nullptr)
+  { COSE_FREE(rgbOut, context); }
+ 
+  if (cnTmp != nullptr)
+  { COSE_FREE(cnTmp, context); }
+ 
+  if (ctx != nullptr)
+  { EVP_CIPHER_CTX_free(ctx); }
+  
+  return false;
 }
 
 bool AES_GCM_Decrypt(COSE_Enveloped *pcose,
@@ -1899,80 +1852,131 @@ bool EdDSA_Verify(COSE *pSigner,
 }
 #endif
 
-bool AES_KW_Decrypt(COSE_Enveloped *pcose,
-	const byte *pbKeyIn,
-	size_t cbitKey,
-	const byte *pbCipherText,
-	size_t cbCipherText,
-	byte *pbKeyOut,
-	size_t *pcbKeyOut,
-	cose_errback *perr)
+bool AES_KW_Decrypt(
+	                COSE_Enveloped* pcose,
+                    const byte*     pbKeyIn,
+                    size_t          cbitKey,
+                    const byte*     pbCipherText,
+                    size_t          cbCipherText,
+                    byte*           pbKeyOut,
+                    size_t*         pcbKeyOut,
+                    cose_errback*   perr
+                   )
 {
-	byte rgbOut[512 / 8];
-	AES_KEY key;
+  byte              rgbOut[EVP_MAX_KEY_LENGTH];
+  EVP_CIPHER_CTX*   ctx     = nullptr;
+  const EVP_CIPHER* cipher  = nullptr;
+  int               len     = 0;
+  int               out_len = 0;
 
-	UNUSED(pcose);
+  UNUSED(pcose);
 
-	CHECK_CONDITION(AES_set_decrypt_key(pbKeyIn, (int)cbitKey, &key) == 0,
-		COSE_ERR_CRYPTO_FAIL);
+  switch (cbitKey)
+  {
+    case 128: cipher = EVP_aes_128_wrap(); break;
+    case 192: cipher = EVP_aes_192_wrap(); break;
+    case 256: cipher = EVP_aes_256_wrap(); break;
+    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+  }
 
-	CHECK_CONDITION(
-		AES_unwrap_key(&key, nullptr, rgbOut, pbCipherText, (int)cbCipherText),
-		COSE_ERR_CRYPTO_FAIL);
+  ctx = EVP_CIPHER_CTX_new();
+  CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	memcpy(pbKeyOut, rgbOut, cbCipherText - 8);
-	*pcbKeyOut = (int)(cbCipherText - 8);
+  CHECK_CONDITION(EVP_DecryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr) == 1, COSE_ERR_CRYPTO_FAIL);
 
-	return true;
+  EVP_CIPHER_CTX_set_flags(ctx, EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
+  CHECK_CONDITION(EVP_DecryptInit_ex(ctx, nullptr, nullptr, pbKeyIn, nullptr) == 1, COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_DecryptUpdate(ctx, rgbOut, &len, pbCipherText, (int)cbCipherText) == 1, COSE_ERR_CRYPTO_FAIL);
+  out_len = len;
+
+  CHECK_CONDITION(EVP_DecryptFinal_ex(ctx, rgbOut + len, &len) == 1, COSE_ERR_CRYPTO_FAIL);
+  out_len += len;
+
+  memcpy(pbKeyOut, rgbOut, out_len);
+  *pcbKeyOut = (size_t)out_len;
+
+  EVP_CIPHER_CTX_free(ctx);
+  return true;
+
 errorReturn:
-	return false;
+  if (ctx != nullptr)
+  { EVP_CIPHER_CTX_free(ctx); }
+
+  return false;
 }
 
-bool AES_KW_Encrypt(COSE_RecipientInfo *pcose,
-	const byte *pbKeyIn,
-	int cbitKey,
-	const byte *pbContent,
-	int cbContent,
-	cose_errback *perr)
+bool AES_KW_Encrypt(
+                    COSE_RecipientInfo* pcose,
+                    const byte*         pbKeyIn,
+                    int                 cbitKey,
+                    const byte*         pbContent,
+                    int                 cbContent,
+                    cose_errback*       perr
+                   )
 {
-	byte *pbOut = nullptr;
-	AES_KEY key;
+  byte*             pbOut   = nullptr;
+  EVP_CIPHER_CTX*   ctx     = nullptr;
+  const EVP_CIPHER* cipher  = nullptr;
+  int               len     = 0;
+  int               out_len = 0;
+
 #ifdef USE_CBOR_CONTEXT
-	cn_cbor_context *context = &pcose->m_encrypt.m_message.m_allocContext;
+  cn_cbor_context *context = &pcose->m_encrypt.m_message.m_allocContext;
 #endif
-	cn_cbor *cnTmp = nullptr;
+  cn_cbor *cnTmp = nullptr;
 
-	pbOut = (byte *)COSE_CALLOC(cbContent + 8, 1, context);
-	CHECK_CONDITION(pbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  switch (cbitKey)
+  {
+    case 128: cipher = EVP_aes_128_wrap(); break;
+    case 192: cipher = EVP_aes_192_wrap(); break;
+    case 256: cipher = EVP_aes_256_wrap(); break;
+    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+  }
 
-	CHECK_CONDITION(
-		AES_set_encrypt_key(pbKeyIn, cbitKey, &key) == 0, COSE_ERR_CRYPTO_FAIL);
+  pbOut = (byte *)COSE_CALLOC(cbContent + 8, 1, context);
+  CHECK_CONDITION(pbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	CHECK_CONDITION(AES_wrap_key(&key, nullptr, pbOut, pbContent, cbContent),
-		COSE_ERR_CRYPTO_FAIL);
+  ctx = EVP_CIPHER_CTX_new();
+  CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	cnTmp = cn_cbor_data_create2(
-		pbOut, (int)cbContent + 8, 0, CBOR_CONTEXT_PARAM_COMMA nullptr);
-	CHECK_CONDITION(cnTmp != nullptr, COSE_ERR_CBOR);
-	pbOut = nullptr;
-	CHECK_CONDITION(_COSE_array_replace(&pcose->m_encrypt.m_message, cnTmp,
-						INDEX_BODY, CBOR_CONTEXT_PARAM_COMMA nullptr),
-		COSE_ERR_CBOR);
-	cnTmp = nullptr;
+  CHECK_CONDITION(EVP_EncryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr) == 1, COSE_ERR_CRYPTO_FAIL);
 
-	return true;
+  EVP_CIPHER_CTX_set_flags(ctx, EVP_CIPHER_CTX_FLAG_WRAP_ALLOW);
+
+  CHECK_CONDITION(EVP_EncryptInit_ex(ctx, nullptr, nullptr, pbKeyIn, nullptr) == 1, COSE_ERR_CRYPTO_FAIL);
+
+  CHECK_CONDITION(EVP_EncryptUpdate(ctx, pbOut, &len, pbContent, cbContent) == 1, COSE_ERR_CRYPTO_FAIL);
+  out_len = len;
+
+  CHECK_CONDITION(EVP_EncryptFinal_ex(ctx, pbOut + len, &len) == 1, COSE_ERR_CRYPTO_FAIL);
+  out_len += len;
+
+  cnTmp = cn_cbor_data_create2(pbOut, out_len, 0, CBOR_CONTEXT_PARAM_COMMA nullptr);
+  CHECK_CONDITION(cnTmp != nullptr, COSE_ERR_CBOR);
+  pbOut = nullptr; // Memory ownership transferred cleanly to cnTmp
+
+  CHECK_CONDITION(_COSE_array_replace(&pcose->m_encrypt.m_message, cnTmp, INDEX_BODY, CBOR_CONTEXT_PARAM_COMMA nullptr), COSE_ERR_CBOR);
+  cnTmp = nullptr;
+
+  EVP_CIPHER_CTX_free(ctx);
+  return true;
 
 errorReturn:
-	COSE_FREE(cnTmp, context);
-	if (pbOut != nullptr) {
-		COSE_FREE(pbOut, context);
-	}
-	return false;
+  if (ctx != nullptr)
+  { EVP_CIPHER_CTX_free(ctx);  }
+
+  if (cnTmp != nullptr)
+  { COSE_FREE(cnTmp, context); }
+ 
+  if (pbOut != nullptr)
+  { COSE_FREE(pbOut, context); }
+
+  return false;
 }
 
 void rand_bytes(byte *pb, size_t cb)
 {
-	RAND_bytes(pb, (int)cb);
+  RAND_bytes(pb, (int)cb);
 }
 
 /*!
