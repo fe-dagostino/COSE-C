@@ -21,6 +21,11 @@
 #include <openssl/ecdh.h>
 #include <openssl/rand.h>
 #include <openssl/bn.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
+
+
+static const char* g_sha_algorithms[] = { "SHA256", "SHA384", "SHA512" };
 
 /*******************************************/
 
@@ -836,68 +841,72 @@ errorReturn:
 	return false;
 }
 
-bool HKDF_Extract(COSE *pcose,
-	const byte *pbKey,
-	size_t cbKey,
-	size_t cbitDigest,
-	byte *rgbDigest,
-	size_t *pcbDigest,
-	CBOR_CONTEXT_COMMA cose_errback *perr)
+bool HKDF_Extract(	COSE*		pcose,
+					const byte*	pbKey,
+					size_t		cbKey,
+					size_t		cbitDigest,
+					byte*		rgbDigest,
+					size_t*		pcbDigest,
+					CBOR_CONTEXT_COMMA cose_errback *perr)
 {
 #ifdef USE_CBOR_CONTEXT
 	UNUSED(context);
 #endif
-	byte rgbSalt[EVP_MAX_MD_SIZE] = {0};
-	int cbSalt;
-	cn_cbor *cnSalt;
-	HMAC_CTX *ctx;
-	const EVP_MD *pmd = nullptr;
-	unsigned int cbDigest;
+	byte          rgbSalt[EVP_MAX_MD_SIZE] = {0};
+	int           cbSalt;
+	cn_cbor*      cnSalt;
+	size_t        cbDigest = 0;
+	EVP_MAC*      mac  = nullptr;
+    EVP_MAC_CTX*  mctx = nullptr;
 
-	ctx = HMAC_CTX_new();
-	CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
-
+	mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    CHECK_CONDITION(nullptr != mac, COSE_ERR_OUT_OF_MEMORY);
+	mctx = EVP_MAC_CTX_new(mac);
+	CHECK_CONDITION(nullptr != mctx, COSE_ERR_OUT_OF_MEMORY);
 	if (0) {
 	errorReturn:
-		HMAC_CTX_free(ctx);
+		EVP_MAC_CTX_free(mctx);
+		EVP_MAC_free(mac);
 		return false;
 	}
 
-	switch (cbitDigest) {
+  OSSL_PARAM params[2];
+  params[1] = OSSL_PARAM_construct_end();
+  switch (cbitDigest) {
 		case 256:
-			pmd = EVP_sha256();
+		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
 			cbSalt = 256 / 8;
 			break;
 		case 384:
-			pmd = EVP_sha384();
+		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
 			cbSalt = 384 / 8;
 			break;
 		case 512:
-			pmd = EVP_sha512();
+		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
 			cbSalt = 512 / 8;
 			break;
 		default:
 			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
 			break;
-	}
+  }
 
-	cnSalt = _COSE_map_get_int(pcose, COSE_Header_HKDF_salt, COSE_BOTH, perr);
+  cnSalt = _COSE_map_get_int(pcose, COSE_Header_HKDF_salt, COSE_BOTH, perr);
 
-	if (cnSalt != nullptr) {
-		CHECK_CONDITION(HMAC_Init_ex(ctx, cnSalt->v.bytes, (int)cnSalt->length,
-							pmd, nullptr),
-			COSE_ERR_CRYPTO_FAIL);
-	}
-	else {
-		CHECK_CONDITION(HMAC_Init_ex(ctx, rgbSalt, cbSalt, pmd, nullptr),
-			COSE_ERR_CRYPTO_FAIL);
-	}
-	CHECK_CONDITION(HMAC_Update(ctx, pbKey, (int)cbKey), COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(
-		HMAC_Final(ctx, rgbDigest, &cbDigest), COSE_ERR_CRYPTO_FAIL);
-	*pcbDigest = cbDigest;
-	HMAC_CTX_free(ctx);
-	return true;
+  if (cnSalt != nullptr) {
+    CHECK_CONDITION(EVP_MAC_init( mctx, cnSalt->v.bytes, cnSalt->length, params ), COSE_ERR_CRYPTO_FAIL);
+  }
+  else {
+    CHECK_CONDITION(EVP_MAC_init( mctx, rgbSalt, cbSalt, params ), COSE_ERR_CRYPTO_FAIL);
+  }
+
+  CHECK_CONDITION(EVP_MAC_update(mctx, pbKey, cbKey), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_MAC_final(mctx, rgbDigest, &cbDigest, *pcbDigest), COSE_ERR_CRYPTO_FAIL);
+
+  *pcbDigest = cbDigest;
+  EVP_MAC_CTX_free(mctx);
+  EVP_MAC_free(mac);
+
+  return true;
 }
 
 bool HKDF_Expand(COSE *pcose,
@@ -910,54 +919,58 @@ bool HKDF_Expand(COSE *pcose,
 	size_t cbOutput,
 	cose_errback *perr)
 {
-	HMAC_CTX *ctx;
-	const EVP_MD *pmd = nullptr;
-	size_t ib;
-	unsigned int cbDigest = 0;
-	byte rgbDigest[EVP_MAX_MD_SIZE];
-	byte bCount = 1;
+  EVP_MAC*     mac  = nullptr;
+  EVP_MAC_CTX* mctx = nullptr;
+  size_t       ib;
+  size_t       cbDigest = 0;
+  byte         rgbDigest[EVP_MAX_MD_SIZE];
+  byte         bCount = 1;
 
-	UNUSED(pcose);
+  UNUSED(pcose);
 
-	ctx = HMAC_CTX_new();
-	CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+  CHECK_CONDITION(nullptr != mac, COSE_ERR_OUT_OF_MEMORY);
+  mctx = EVP_MAC_CTX_new(mac);
+  CHECK_CONDITION(nullptr != mctx, COSE_ERR_OUT_OF_MEMORY);
 
-	if (0) {
-	errorReturn:
-		HMAC_CTX_free(ctx);
-		return false;
-	}
+  if (0) {
+    errorReturn:
+      EVP_MAC_CTX_free(mctx);
+      EVP_MAC_free(mac);
+      return false;
+  }
 
+	OSSL_PARAM params[2];
+    params[1] = OSSL_PARAM_construct_end();
 	switch (cbitDigest) {
 		case 256:
-			pmd = EVP_sha256();
+		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
 			break;
 		case 384:
-			pmd = EVP_sha384();
+		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
 			break;
 		case 512:
-			pmd = EVP_sha512();
+			params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
 			break;
 		default:
 			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
 			break;
 	}
 
-	for (ib = 0; ib < cbOutput; ib += cbDigest, bCount += 1) {
-		CHECK_CONDITION(HMAC_Init_ex(ctx, pbPRK, (int)cbPRK, pmd, nullptr),
-			COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(
-			HMAC_Update(ctx, rgbDigest, cbDigest), COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(HMAC_Update(ctx, pbInfo, cbInfo), COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(HMAC_Update(ctx, &bCount, 1), COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(
-			HMAC_Final(ctx, rgbDigest, &cbDigest), COSE_ERR_CRYPTO_FAIL);
+	for (ib = 0; ib < cbOutput; ib += cbDigest, bCount += 1)
+	{
+		CHECK_CONDITION(EVP_MAC_init  (mctx, pbPRK    , cbPRK   , params          ), COSE_ERR_CRYPTO_FAIL);
+        CHECK_CONDITION(EVP_MAC_update(mctx, rgbDigest, cbDigest                  ), COSE_ERR_CRYPTO_FAIL);
+		CHECK_CONDITION(EVP_MAC_update(mctx, pbInfo   , cbInfo                    ), COSE_ERR_CRYPTO_FAIL);
+		CHECK_CONDITION(EVP_MAC_update(mctx, &bCount  , 1                         ), COSE_ERR_CRYPTO_FAIL);
+		CHECK_CONDITION(EVP_MAC_final (mctx, rgbDigest, &cbDigest, EVP_MAX_MD_SIZE), COSE_ERR_CRYPTO_FAIL);
 
 		memcpy(pbOutput + ib, rgbDigest, COSE_MIN(cbDigest, cbOutput - ib));
 	}
 
-	HMAC_CTX_free(ctx);
-	return true;
+  EVP_MAC_CTX_free(mctx);
+  EVP_MAC_free(mac);
+  return true;
 }
 
 bool HMAC_Create(COSE_MacMessage *pcose,
@@ -969,62 +982,67 @@ bool HMAC_Create(COSE_MacMessage *pcose,
 	size_t cbAuthData,
 	cose_errback *perr)
 {
-	HMAC_CTX *ctx;
-	const EVP_MD *pmd = nullptr;
-	byte *rgbOut = nullptr;
-	unsigned int cbOut;
-	cn_cbor *cbor = nullptr;
+  EVP_MAC*     mac    = nullptr;
+  EVP_MAC_CTX* mctx   = nullptr;
+  byte*        rgbOut = nullptr;
+  size_t       cbOut  = 0;
+  cn_cbor*     cbor   = nullptr;
 #ifdef USE_CBOR_CONTEXT
 	cn_cbor_context *context = &pcose->m_message.m_allocContext;
 #endif
 
-	ctx = HMAC_CTX_new();
-	CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
+  mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+  CHECK_CONDITION(nullptr != mac, COSE_ERR_OUT_OF_MEMORY);
+  mctx = EVP_MAC_CTX_new(mac);
+  CHECK_CONDITION(nullptr != mctx, COSE_ERR_OUT_OF_MEMORY);
 
-	if (0) {
-	errorReturn:
-		COSE_FREE(rgbOut, context);
-		if (cbor != nullptr) {
-			COSE_FREE(cbor, context);
-		}
-		HMAC_CTX_free(ctx);
-		return false;
-	}
+  if (0)
+  {
+errorReturn:
+    COSE_FREE(rgbOut, context);
 
-	switch (HSize) {
-		case 256:
-			pmd = EVP_sha256();
-			break;
-		case 384:
-			pmd = EVP_sha384();
-			break;
-		case 512:
-			pmd = EVP_sha512();
-			break;
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-	}
+    if (cbor != nullptr)
+    { COSE_FREE(cbor, context); }
 
-	rgbOut = (byte *)COSE_CALLOC(EVP_MAX_MD_SIZE, 1, context);
-	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+    EVP_MAC_CTX_free(mctx);
+    EVP_MAC_free(mac);
+    return false;
+  }
 
-	CHECK_CONDITION(HMAC_Init_ex(ctx, pbKey, (int)cbKey, pmd, nullptr),
-		COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(
-		HMAC_Update(ctx, pbAuthData, cbAuthData), COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(HMAC_Final(ctx, rgbOut, &cbOut), COSE_ERR_CRYPTO_FAIL);
+  OSSL_PARAM params[2];
+  params[1] = OSSL_PARAM_construct_end();
 
-	cbor = cn_cbor_data_create2(
-		rgbOut, TSize / 8, 0, CBOR_CONTEXT_PARAM_COMMA nullptr);
-	CHECK_CONDITION(cbor != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  switch (HSize)
+  {
+    case 256:
+      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
+    break;
+    case 384:
+      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
+    break;
+    case 512:
+      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
+    break;
+    default:
+      FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+    break;
+  }
 
-	CHECK_CONDITION(_COSE_array_replace(&pcose->m_message, cbor, INDEX_MAC_TAG,
-						CBOR_CONTEXT_PARAM_COMMA nullptr),
-		COSE_ERR_CBOR);
+  rgbOut = (byte *)COSE_CALLOC(EVP_MAX_MD_SIZE, 1, context);
+  CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	HMAC_CTX_free(ctx);
-	return true;
+  CHECK_CONDITION(EVP_MAC_init  (mctx, pbKey     , cbKey     , params          ), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_MAC_update(mctx, pbAuthData, cbAuthData                  ), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_MAC_final (mctx, rgbOut    , &cbOut    , EVP_MAX_MD_SIZE ), COSE_ERR_CRYPTO_FAIL);
+
+  cbor = cn_cbor_data_create2(rgbOut, TSize / 8, 0, CBOR_CONTEXT_PARAM_COMMA nullptr);
+  CHECK_CONDITION(cbor != nullptr, COSE_ERR_OUT_OF_MEMORY);
+
+  CHECK_CONDITION(_COSE_array_replace(&pcose->m_message, cbor, INDEX_MAC_TAG, CBOR_CONTEXT_PARAM_COMMA nullptr), COSE_ERR_CBOR);
+
+  EVP_MAC_CTX_free(mctx);
+  EVP_MAC_free(mac);
+  return true;
 }
 
 bool HMAC_Validate(COSE_MacMessage *pcose,
@@ -1036,65 +1054,78 @@ bool HMAC_Validate(COSE_MacMessage *pcose,
 	size_t cbAuthData,
 	cose_errback *perr)
 {
-	HMAC_CTX *ctx = nullptr;
-	const EVP_MD *pmd = nullptr;
-	byte *rgbOut = nullptr;
-	unsigned int cbOut = 0;
-	bool f = false;
+  EVP_MAC*     mac    = nullptr;
+  EVP_MAC_CTX* mctx   = nullptr;
+  byte*        rgbOut = nullptr;
+  size_t       cbOut  = 0;
+  bool         f      = false;
 #ifdef USE_CBOR_CONTEXT
 	cn_cbor_context *context = &pcose->m_message.m_allocContext;
 #endif
 
-	if (false) {
-	errorReturn:
-		if (rgbOut != nullptr) {
-			COSE_FREE(rgbOut, context);
-		}
-		HMAC_CTX_free(ctx);
-		return false;
-	}
-	ctx = HMAC_CTX_new();
-	CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  if (false)
+  {
+errorReturn:
+    if (rgbOut != nullptr)
+    { COSE_FREE(rgbOut, context); }
 
-	switch (HSize) {
-		case 256:
-			pmd = EVP_sha256();
-			break;
-		case 384:
-			pmd = EVP_sha384();
-			break;
-		case 512:
-			pmd = EVP_sha512();
-			break;
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-	}
+    EVP_MAC_CTX_free(mctx);
+    EVP_MAC_free(mac);
+    return false;
+  }
 
-	rgbOut = (byte *)COSE_CALLOC(EVP_MAX_MD_SIZE, 1, context);
-	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+  CHECK_CONDITION(nullptr != mac, COSE_ERR_OUT_OF_MEMORY);
+  mctx = EVP_MAC_CTX_new(mac);
+  CHECK_CONDITION(nullptr != mctx, COSE_ERR_OUT_OF_MEMORY);
 
-	CHECK_CONDITION(HMAC_Init_ex(ctx, pbKey, (int)cbKey, pmd, nullptr),
-		COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(
-		HMAC_Update(ctx, pbAuthData, cbAuthData), COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(HMAC_Final(ctx, rgbOut, &cbOut), COSE_ERR_CRYPTO_FAIL);
+  OSSL_PARAM params[2];
+  params[1] = OSSL_PARAM_construct_end();
 
-	cn_cbor *cn = _COSE_arrayget_int(&pcose->m_message, INDEX_MAC_TAG);
-	CHECK_CONDITION(cn != nullptr, COSE_ERR_CBOR);
+  switch (HSize)
+  {
+    case 256:
+      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
+    break;
+    case 384:
+      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
+    break;
+    case 512:
+      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
+    break;
 
-	if (cn->length > cbOut) {
-		f = false;
-	}
-	else {
-		for (unsigned int i = 0; i < (unsigned int)TSize / 8; i++) {
-			f |= (cn->v.bytes[i] != rgbOut[i]);
-		}
-	}
+    default:
+      FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+    break;
+  }
 
-	COSE_FREE(rgbOut, context);
-	HMAC_CTX_free(ctx);
-	return !f;
+  rgbOut = (byte *)COSE_CALLOC(EVP_MAX_MD_SIZE, 1, context);
+  CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+
+  CHECK_CONDITION(EVP_MAC_init  (mctx, pbKey     , cbKey     , params          ), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_MAC_update(mctx, pbAuthData, cbAuthData                  ), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_MAC_final (mctx, rgbOut    , &cbOut    , EVP_MAX_MD_SIZE ), COSE_ERR_CRYPTO_FAIL);
+
+  cn_cbor *cn = _COSE_arrayget_int(&pcose->m_message, INDEX_MAC_TAG);
+  CHECK_CONDITION(cn != nullptr, COSE_ERR_CBOR);
+
+  if (cn->length > cbOut)
+  {
+    f = false;
+  }
+  else
+  {
+    for (unsigned int i = 0; i < (unsigned int)TSize / 8; i++)
+    {
+      f |= (cn->v.bytes[i] != rgbOut[i]);
+    }
+  }
+
+  COSE_FREE(rgbOut, context);
+
+  EVP_MAC_CTX_free(mctx);
+  EVP_MAC_free(mac);
+  return !f;
 }
 
 #define COSE_Key_EC_Curve -1
@@ -1303,9 +1334,7 @@ EC_KEY *ECKey_From(COSE_KEY *pKey, int *cbGroup, cose_errback *perr)
 	return pNewKey.Release();
 }
 
-cn_cbor *EC_ToCBOR(const EC_KEY *pKey,
-	bool fUseCompressed,
-	CBOR_CONTEXT_COMMA cose_errback *perr)
+cn_cbor *EC_ToCBOR(const EC_KEY *pKey, bool fUseCompressed, CBOR_CONTEXT_COMMA cose_errback *perr)
 {
 	cn_cbor *pkey = nullptr;
 	int cose_group;
@@ -1696,8 +1725,7 @@ bool ECDSA_Verify(COSE *pSigner,
 
 	ECDSA_SIG_set0(sig, r, s);
 
-	CHECK_CONDITION(ECDSA_do_verify(rgbDigest, cbDigest, sig, eckey) == 1,
-		COSE_ERR_CRYPTO_FAIL);
+	CHECK_CONDITION(ECDSA_do_verify(rgbDigest, cbDigest, sig, eckey) == 1, COSE_ERR_CRYPTO_FAIL);
 
 	if (eckey != nullptr) {
 		EC_KEY_free(eckey);
