@@ -24,6 +24,14 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 
+#if defined(_MSC_VER)
+  #define FORCE_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+  #define FORCE_INLINE inline __attribute__((always_inline))
+#else
+  #define FORCE_INLINE inline
+#endif
+
 enum class sha_algo : size_t
 {
   SHA256 = 0,
@@ -33,7 +41,7 @@ enum class sha_algo : size_t
 
 static const char* g_sha_algorithms[] = { "SHA256", "SHA384", "SHA512" };
 
-static constexpr bool digest_bits_to_OSSL_PARAM( size_t bits, OSSL_PARAM& param )
+[[nodiscard]] FORCE_INLINE bool digest_bits_to_OSSL_PARAM( size_t bits, OSSL_PARAM& param )
 {
   bool retvalue = true;
   switch (bits)
@@ -52,6 +60,75 @@ static constexpr bool digest_bits_to_OSSL_PARAM( size_t bits, OSSL_PARAM& param 
   }
 
   return retvalue;
+}
+
+[[nodiscard]] FORCE_INLINE const EVP_CIPHER * FETCH_AES_GCM_CIPHER( size_t bytes ) noexcept(true)
+{
+  switch (bytes)
+  {
+    case 16: /* 128 bits / 8 */
+      return EVP_aes_128_gcm();
+    case 24: /* 192 bits / 8 */
+      return EVP_aes_192_gcm();
+    case 32: /* 256 bits / 8 */
+      return EVP_aes_256_gcm();
+  }
+  return nullptr;
+}
+
+[[nodiscard]] FORCE_INLINE const EVP_CIPHER * FETCH_AES_CCM_CIPHER( size_t bytes ) noexcept(true)
+{
+  switch (bytes)
+  {
+    case 16: /* 128 bits / 8 */
+      return EVP_aes_128_ccm();
+    case 24: /* 192 bits / 8 */
+      return EVP_aes_192_ccm();
+    case 32: /* 256 bits / 8 */
+      return EVP_aes_256_ccm();
+  }
+  return nullptr;
+}
+
+[[nodiscard]] FORCE_INLINE const EVP_CIPHER * FETCH_AES_CBC_CIPHER( size_t bytes ) noexcept(true)
+{
+  switch (bytes)
+  {
+    case 16: /* 128 bits / 8 */
+      return EVP_aes_128_cbc();
+    case 32: /* 256 bits / 8 */
+      return EVP_aes_256_cbc();
+  }
+  return nullptr;
+}
+
+[[nodiscard]] FORCE_INLINE const EVP_CIPHER * FETCH_AES_WRAP_CIPHER( size_t bytes ) noexcept(true)
+{
+  switch (bytes)
+  {
+    case 16: /* 128 bits / 8 */
+      return EVP_aes_128_wrap();
+    case 24: /* 192 bits / 8 */
+      return EVP_aes_192_wrap();
+    case 32: /* 256 bits / 8 */
+      return EVP_aes_256_wrap();
+  }
+  return nullptr;
+}
+
+/* Fetch Message Digest accordingly with number of bits */
+[[nodiscard]] FORCE_INLINE const EVP_MD * FETCH_SHA_MD( size_t bits ) noexcept(true)
+{
+  switch (bits)
+  {
+    case 256: /* 256 bits */
+      return EVP_sha256();
+    case 384: /* 384 bits */
+      return EVP_sha384();
+    case 512: /* 512 bits */
+      return EVP_sha512();
+  }
+  return nullptr;
 }
 
 /*******************************************/
@@ -154,13 +231,10 @@ errorReturn:
   CHECK_CONDITION(pIV->length == NSize, COSE_ERR_INVALID_PARAMETER);
   memcpy(rgbIV, pIV->v.str, pIV->length);
 
-  switch (cbKey)
-  {
-    case 128 / 8: cipher = EVP_aes_128_ccm(); break;
-    case 192 / 8: cipher = EVP_aes_192_ccm(); break;
-    case 256 / 8: cipher = EVP_aes_256_ccm(); break;
-    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); break;
-  }
+  cipher = FETCH_AES_CCM_CIPHER(cbKey);
+  if (cipher == nullptr)
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
+
   CHECK_CONDITION(EVP_DecryptInit_ex (ctx, cipher, nullptr, nullptr, nullptr), COSE_ERR_DECRYPT_FAILED);
 
   TSize /= 8;	 // Comes in in bits not bytes.
@@ -222,13 +296,9 @@ bool AES_CCM_Encrypt(COSE_Enveloped *pcose,
   ctx = EVP_CIPHER_CTX_new();
   CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
 
-  switch (cbKey * 8)
-  {
-    case 128: cipher = EVP_aes_128_ccm(); break;
-    case 192: cipher = EVP_aes_192_ccm(); break;
-    case 256: cipher = EVP_aes_256_ccm(); break;
-    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-  }
+  cipher = FETCH_AES_CCM_CIPHER(cbKey);
+  if (cipher == nullptr)
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
   cbor_iv = _COSE_map_get_int(&pcose->m_message, COSE_Header_IV, COSE_BOTH, perr);
   if (cbor_iv == nullptr)
@@ -353,23 +423,9 @@ bool AES_GCM_Decrypt(COSE_Enveloped *pcose,
 
 	//  Setup and run the OpenSSL code
 
-	switch (cbKey) {
-		case 128 / 8:
-			cipher = EVP_aes_128_gcm();
-			break;
-
-		case 192 / 8:
-			cipher = EVP_aes_192_gcm();
-			break;
-
-		case 256 / 8:
-			cipher = EVP_aes_256_gcm();
-			break;
-
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-	}
+    cipher = FETCH_AES_GCM_CIPHER(cbKey);
+    if ( cipher == nullptr )
+    { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
 	//  Do the setup for OpenSSL
 
@@ -487,23 +543,9 @@ bool AES_GCM_Encrypt(COSE_Enveloped *pcose,
 		memcpy(rgbIV, cbor_iv->v.str, cbor_iv->length);
 	}
 
-	switch (cbKey * 8) {
-		case 128:
-			cipher = EVP_aes_128_gcm();
-			break;
-
-		case 192:
-			cipher = EVP_aes_192_gcm();
-			break;
-
-		case 256:
-			cipher = EVP_aes_256_gcm();
-			break;
-
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-	}
+    cipher = FETCH_AES_GCM_CIPHER(cbKey);
+    if ( cipher == nullptr )
+    { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
 	//  Setup and run the OpenSSL code
 
@@ -555,7 +597,7 @@ bool AES_CBC_MAC_Create(COSE_MacMessage *pcose,
 	size_t cbAuthData,
 	cose_errback *perr)
 {
-	const EVP_CIPHER *pcipher = nullptr;
+	const EVP_CIPHER *cipher = nullptr;
 	EVP_CIPHER_CTX *ctx;
 	int cbOut;
 	byte rgbIV[16] = {0};
@@ -573,22 +615,13 @@ bool AES_CBC_MAC_Create(COSE_MacMessage *pcose,
 	rgbOut = (byte *)COSE_CALLOC(16, 1, context);
 	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	switch (cbKey * 8) {
-		case 128:
-			pcipher = EVP_aes_128_cbc();
-			break;
-
-		case 256:
-			pcipher = EVP_aes_256_cbc();
-			break;
-
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-	}
+  cipher = FETCH_AES_CBC_CIPHER(cbKey);
+  if ( cipher == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
 	//  Setup and run the OpenSSL code
 
-	CHECK_CONDITION(EVP_EncryptInit_ex(ctx, pcipher, nullptr, pbKey, rgbIV),
+	CHECK_CONDITION(EVP_EncryptInit_ex(ctx, cipher, nullptr, pbKey, rgbIV),
 		COSE_ERR_CRYPTO_FAIL);
 
 	for (i = 0; i < (unsigned int)cbAuthData / 16; i++) {
@@ -637,112 +670,100 @@ bool AES_CBC_MAC_Validate(COSE_MacMessage *pcose,
 	size_t cbAuthData,
 	cose_errback *perr)
 {
-	const EVP_CIPHER *pcipher = nullptr;
-	EVP_CIPHER_CTX *ctx = nullptr;
-	int cbOut;
-	byte rgbIV[16] = {0};
-	byte rgbTag[16] = {0};
-	bool f = false;
-	unsigned int i;
+  const EVP_CIPHER *cipher     = nullptr;
+  EVP_CIPHER_CTX *  ctx        = nullptr;
+  int               cbOut;
+  byte              rgbIV[16]  = {0};
+  byte              rgbTag[16] = {0};
+  bool              f          = false;
+  unsigned int i;
 
-	if (false) {
-	errorReturn:
-		EVP_CIPHER_CTX_free(ctx);
-		return false;
-	}
-	switch (cbKey * 8) {
-		case 128:
-			pcipher = EVP_aes_128_cbc();
-			break;
+  if (false)
+  {
+errorReturn:
+    EVP_CIPHER_CTX_free(ctx);
+    return false;
+  }
 
-		case 256:
-			pcipher = EVP_aes_256_cbc();
-			break;
+  cipher = FETCH_AES_CBC_CIPHER(cbKey);
+  if ( cipher == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-	}
+  // Setup and run the OpenSSL code
 
-	//  Setup and run the OpenSSL code
+  ctx = EVP_CIPHER_CTX_new();
+  CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
+  CHECK_CONDITION(EVP_EncryptInit_ex(ctx, cipher, nullptr, pbKey, rgbIV), COSE_ERR_CRYPTO_FAIL);
 
-	ctx = EVP_CIPHER_CTX_new();
-	CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
-	CHECK_CONDITION(EVP_EncryptInit_ex(ctx, pcipher, nullptr, pbKey, rgbIV),
-		COSE_ERR_CRYPTO_FAIL);
+  TSize /= 8;
 
-	TSize /= 8;
+  for (i = 0; i < (unsigned int)cbAuthData / 16; i++)
+  {
+    CHECK_CONDITION( EVP_EncryptUpdate(ctx, rgbTag, &cbOut, pbAuthData + (i * 16), 16), COSE_ERR_CRYPTO_FAIL);
+  }
 
-	for (i = 0; i < (unsigned int)cbAuthData / 16; i++) {
-		CHECK_CONDITION(
-			EVP_EncryptUpdate(ctx, rgbTag, &cbOut, pbAuthData + (i * 16), 16),
-			COSE_ERR_CRYPTO_FAIL);
-	}
-	if (cbAuthData % 16 != 0) {
-		CHECK_CONDITION(EVP_EncryptUpdate(ctx, rgbTag, &cbOut,
-							pbAuthData + (i * 16), cbAuthData % 16),
-			COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(EVP_EncryptUpdate(
-							ctx, rgbTag, &cbOut, rgbIV, 16 - (cbAuthData % 16)),
-			COSE_ERR_CRYPTO_FAIL);
-	}
+  if (cbAuthData % 16 != 0)
+  {
+    CHECK_CONDITION(EVP_EncryptUpdate(ctx, rgbTag, &cbOut, pbAuthData + (i * 16), cbAuthData % 16), COSE_ERR_CRYPTO_FAIL);
+    CHECK_CONDITION(EVP_EncryptUpdate(ctx, rgbTag, &cbOut, rgbIV, 16 - (cbAuthData % 16)), COSE_ERR_CRYPTO_FAIL);
+  }
 
-	cn_cbor *cn = _COSE_arrayget_int(&pcose->m_message, INDEX_MAC_TAG);
-	CHECK_CONDITION(cn != nullptr, COSE_ERR_CBOR);
+  cn_cbor *cn = _COSE_arrayget_int(&pcose->m_message, INDEX_MAC_TAG);
+  CHECK_CONDITION(cn != nullptr, COSE_ERR_CBOR);
 
-	for (i = 0; i < (unsigned int)TSize; i++) {
-		f |= (cn->v.bytes[i] != rgbTag[i]);
-	}
+  for (i = 0; i < (unsigned int)TSize; i++)
+  {
+    f |= (cn->v.bytes[i] != rgbTag[i]);
+  }
 
-	EVP_CIPHER_CTX_free(ctx);
-	return !f;
+  EVP_CIPHER_CTX_free(ctx);
+  return !f;
 }
 
 #if 0
 //  We are doing CBC-MAC not CMAC at this time
 bool AES_CMAC_Validate(COSE_MacMessage * pcose, int KeySize, int TagSize, const byte * pbAuthData, int cbAuthData, cose_errback * perr)
 {
-	CMAC_CTX * pctx = nullptr;
-	const EVP_CIPHER * pcipher = nullptr;
-	byte * rgbOut = nullptr;
-	size_t cbOut;
-	bool f = false;
-	unsigned int i;
+  CMAC_CTX * pctx = nullptr;
+  const EVP_CIPHER * cipher = nullptr;
+  byte * rgbOut = nullptr;
+  size_t cbOut;
+  bool f = false;
+  unsigned int i;
 #ifdef USE_CBOR_CONTEXT
-	cn_cbor_context * context = &pcose->m_message.m_allocContext;
+  cn_cbor_context * context = &pcose->m_message.m_allocContext;
 #endif
 
-	pctx = CMAC_CTX_new();
+  pctx = CMAC_CTX_new();
 
+  cipher = FETCH_AES_CBC_CIPHER(KeySize);
+  if ( cipher == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
-	switch (KeySize) {
-	case 128: pcipher = EVP_aes_128_cbc(); break;
-	case 256: pcipher = EVP_aes_256_cbc(); break;
-	default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); break;
-	}
+  rgbOut = COSE_CALLOC(128/8, 1, context);
+  CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	rgbOut = COSE_CALLOC(128/8, 1, context);
-	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  CHECK_CONDITION(CMAC_Init(pctx, pcose->pbKey, pcose->cbKey, cipher, nullptr /*impl*/) == 1, COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(CMAC_Update(pctx, pbAuthData, cbAuthData), COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(CMAC_Final(pctx, rgbOut, &cbOut), COSE_ERR_CRYPTO_FAIL);
 
-	CHECK_CONDITION(CMAC_Init(pctx, pcose->pbKey, pcose->cbKey, pcipher, nullptr /*impl*/) == 1, COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(CMAC_Update(pctx, pbAuthData, cbAuthData), COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(CMAC_Final(pctx, rgbOut, &cbOut), COSE_ERR_CRYPTO_FAIL);
+  cn_cbor * cn = _COSE_arrayget_int(&pcose->m_message, INDEX_MAC_TAG);
+  CHECK_CONDITION(cn != nullptr, COSE_ERR_CBOR);
 
-	cn_cbor * cn = _COSE_arrayget_int(&pcose->m_message, INDEX_MAC_TAG);
-	CHECK_CONDITION(cn != nullptr, COSE_ERR_CBOR);
+  for (i = 0; i < (unsigned int)TagSize / 8; i++) f |= (cn->v.bytes[i] != rgbOut[i]);
 
-	for (i = 0; i < (unsigned int)TagSize / 8; i++) f |= (cn->v.bytes[i] != rgbOut[i]);
+  COSE_FREE(rgbOut, context);
+  CMAC_CTX_cleanup(pctx);
+  CMAC_CTX_free(pctx);
 
-	COSE_FREE(rgbOut, context);
-	CMAC_CTX_cleanup(pctx);
-	CMAC_CTX_free(pctx);
-	return !f;
+  return !f;
 
 errorReturn:
-	COSE_FREE(rgbOut, context);
-	CMAC_CTX_cleanup(pctx);
-	CMAC_CTX_free(pctx);
-	return false;
+  COSE_FREE(rgbOut, context);
+  CMAC_CTX_cleanup(pctx);
+  CMAC_CTX_free(pctx);
 
+  return false;
 }
 #endif
 
@@ -756,7 +777,7 @@ bool HKDF_AES_Expand(COSE *pcose,
 	size_t cbOutput,
 	cose_errback *perr)
 {
-	const EVP_CIPHER *pcipher = nullptr;
+	const EVP_CIPHER *cipher = nullptr;
 	EVP_CIPHER_CTX *ctx;
 	int cbOut;
 	byte rgbIV[16] = {0};
@@ -771,26 +792,18 @@ bool HKDF_AES_Expand(COSE *pcose,
 	ctx = EVP_CIPHER_CTX_new();
 	CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
 
-	switch (cbitKey) {
-		case 128:
-			pcipher = EVP_aes_128_cbc();
-			break;
+  cipher = FETCH_AES_CBC_CIPHER(cbitKey/8);
+  if ( cipher == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
-		case 256:
-			pcipher = EVP_aes_256_cbc();
-			break;
+  CHECK_CONDITION(cbPRK == cbitKey / 8, COSE_ERR_INVALID_PARAMETER);
 
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-	}
-	CHECK_CONDITION(cbPRK == cbitKey / 8, COSE_ERR_INVALID_PARAMETER);
-
-	//  Setup and run the OpenSSL code
+  //  Setup and run the OpenSSL code
 
 	for (ib = 0; ib < cbOutput; ib += 16, bCount += 1) {
 		size_t ib2;
 
-		CHECK_CONDITION(EVP_EncryptInit_ex(ctx, pcipher, nullptr, pbPRK, rgbIV),
+		CHECK_CONDITION(EVP_EncryptInit_ex(ctx, cipher, nullptr, pbPRK, rgbIV),
 			COSE_ERR_CRYPTO_FAIL);
 
 		CHECK_CONDITION(
@@ -1401,9 +1414,7 @@ errorReturn:
 	goto returnHere;
 }
 
-cn_cbor *EVP_ToCBOR(EVP_PKEY *pKey,
-	bool fCompressPoints,
-	CBOR_CONTEXT_COMMA cose_errback *perr)
+cn_cbor *EVP_ToCBOR(EVP_PKEY *pKey, bool fCompressPoints, CBOR_CONTEXT_COMMA cose_errback *perr)
 {
 	cn_cbor_errback cborErr;
 	int type = EVP_PKEY_base_id(pKey);
@@ -1544,19 +1555,9 @@ bool ECDSA_Sign(COSE *pSigner,
 		return false;
 	}
 
-	switch (cbitDigest) {
-		case 256:
-			digest = EVP_sha256();
-			break;
-		case 512:
-			digest = EVP_sha512();
-			break;
-		case 384:
-			digest = EVP_sha384();
-			break;
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-	}
+  digest = FETCH_SHA_MD(cbitDigest);
+  if ( digest == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
 	EVP_Digest(rgbToSign, cbToSign, rgbDigest, &cbDigest, digest, nullptr);
 
@@ -1632,20 +1633,11 @@ bool ECDSA_Verify(COSE *pSigner,
 		return false;
 	}
 
-	switch (cbitDigest) {
-		case 256:
-			digest = EVP_sha256();
-			break;
-		case 512:
-			digest = EVP_sha512();
-			break;
-		case 384:
-			digest = EVP_sha384();
-			break;
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-	}
-	EVP_Digest(rgbToSign, cbToSign, rgbDigest, &cbDigest, digest, nullptr);
+  digest = FETCH_SHA_MD(cbitDigest);
+  if ( digest == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
+
+  EVP_Digest(rgbToSign, cbToSign, rgbDigest, &cbDigest, digest, nullptr);
 
 	pSig = _COSE_arrayget_int(pSigner, index);
 	CHECK_CONDITION(pSig != nullptr, COSE_ERR_INVALID_PARAMETER);
@@ -1856,13 +1848,9 @@ bool AES_KW_Decrypt(
 
   UNUSED(pcose);
 
-  switch (cbitKey)
-  {
-    case 128: cipher = EVP_aes_128_wrap(); break;
-    case 192: cipher = EVP_aes_192_wrap(); break;
-    case 256: cipher = EVP_aes_256_wrap(); break;
-    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-  }
+  cipher =FETCH_AES_WRAP_CIPHER(cbitKey/8);
+  if (cipher == nullptr)
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
   ctx = EVP_CIPHER_CTX_new();
   CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
@@ -1910,13 +1898,9 @@ bool AES_KW_Encrypt(
 #endif
   cn_cbor *cnTmp = nullptr;
 
-  switch (cbitKey)
-  {
-    case 128: cipher = EVP_aes_128_wrap(); break;
-    case 192: cipher = EVP_aes_192_wrap(); break;
-    case 256: cipher = EVP_aes_256_wrap(); break;
-    default: FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-  }
+  cipher =FETCH_AES_WRAP_CIPHER(cbitKey/8);
+  if (cipher == nullptr)
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
   pbOut = (byte *)COSE_CALLOC(cbContent + 8, 1, context);
   CHECK_CONDITION(pbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
@@ -2024,8 +2008,7 @@ bool ECDH_ComputeSecret(COSE *pRecipient,
 				const EC_KEY *peckeyPublic = EVP_PKEY_get0_EC_KEY(evpPublic);
 				EC_KEY_set_group(
 					peckeyPrivate, EC_KEY_get0_group(peckeyPublic));
-				CHECK_CONDITION(EC_KEY_generate_key(peckeyPrivate) == 1,
-					COSE_ERR_CRYPTO_FAIL);
+				CHECK_CONDITION( EC_KEY_generate_key(peckeyPrivate) == 1, COSE_ERR_CRYPTO_FAIL);
 				evpPrivate = EVP_PKEY_new();
 				EVP_PKEY_set1_EC_KEY(evpPrivate, peckeyPrivate);
 			} break;
