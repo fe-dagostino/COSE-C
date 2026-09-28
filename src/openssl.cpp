@@ -24,8 +24,35 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 
+enum class sha_algo : size_t
+{
+  SHA256 = 0,
+  SHA384,
+  SHA512
+};
 
 static const char* g_sha_algorithms[] = { "SHA256", "SHA384", "SHA512" };
+
+static constexpr bool digest_bits_to_OSSL_PARAM( size_t bits, OSSL_PARAM& param )
+{
+  bool retvalue = true;
+  switch (bits)
+  {
+    case 256:
+      param = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[static_cast<size_t>(sha_algo::SHA256)]), 0);
+    break;
+    case 384:
+      param = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[static_cast<size_t>(sha_algo::SHA384)]), 0);
+    break;
+    case 512:
+      param = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[static_cast<size_t>(sha_algo::SHA512)]), 0);
+    break;
+    default:
+      retvalue = false;
+  }
+
+  return retvalue;
+}
 
 /*******************************************/
 
@@ -825,30 +852,20 @@ bool HKDF_Extract(	COSE*		pcose,
 
   OSSL_PARAM params[2];
   params[1] = OSSL_PARAM_construct_end();
-  switch (cbitDigest) {
-		case 256:
-		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
-			cbSalt = 256 / 8;
-			break;
-		case 384:
-		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
-			cbSalt = 384 / 8;
-			break;
-		case 512:
-		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
-			cbSalt = 512 / 8;
-			break;
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-  }
 
+  if ( digest_bits_to_OSSL_PARAM( cbitDigest, params[0] ) == false )
+  {
+    FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+  }
+  cbSalt = cbitDigest / 8;
   cnSalt = _COSE_map_get_int(pcose, COSE_Header_HKDF_salt, COSE_BOTH, perr);
 
-  if (cnSalt != nullptr) {
+  if (cnSalt != nullptr)
+  {
     CHECK_CONDITION(EVP_MAC_init( mctx, cnSalt->v.bytes, cnSalt->length, params ), COSE_ERR_CRYPTO_FAIL);
   }
-  else {
+  else
+  {
     CHECK_CONDITION(EVP_MAC_init( mctx, rgbSalt, cbSalt, params ), COSE_ERR_CRYPTO_FAIL);
   }
 
@@ -893,33 +910,24 @@ bool HKDF_Expand(COSE *pcose,
       return false;
   }
 
-	OSSL_PARAM params[2];
-    params[1] = OSSL_PARAM_construct_end();
-	switch (cbitDigest) {
-		case 256:
-		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
-			break;
-		case 384:
-		    params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
-			break;
-		case 512:
-			params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
-			break;
-		default:
-			FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-			break;
-	}
+  OSSL_PARAM params[2];
+  params[1] = OSSL_PARAM_construct_end();
 
-	for (ib = 0; ib < cbOutput; ib += cbDigest, bCount += 1)
-	{
-		CHECK_CONDITION(EVP_MAC_init  (mctx, pbPRK    , cbPRK   , params          ), COSE_ERR_CRYPTO_FAIL);
-        CHECK_CONDITION(EVP_MAC_update(mctx, rgbDigest, cbDigest                  ), COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(EVP_MAC_update(mctx, pbInfo   , cbInfo                    ), COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(EVP_MAC_update(mctx, &bCount  , 1                         ), COSE_ERR_CRYPTO_FAIL);
-		CHECK_CONDITION(EVP_MAC_final (mctx, rgbDigest, &cbDigest, EVP_MAX_MD_SIZE), COSE_ERR_CRYPTO_FAIL);
+  if ( digest_bits_to_OSSL_PARAM( cbitDigest, params[0] ) == false )
+  {
+    FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+  }
 
-		memcpy(pbOutput + ib, rgbDigest, COSE_MIN(cbDigest, cbOutput - ib));
-	}
+  for (ib = 0; ib < cbOutput; ib += cbDigest, bCount += 1)
+  {
+    CHECK_CONDITION(EVP_MAC_init  (mctx, pbPRK    , cbPRK   , params          ), COSE_ERR_CRYPTO_FAIL);
+    CHECK_CONDITION(EVP_MAC_update(mctx, rgbDigest, cbDigest                  ), COSE_ERR_CRYPTO_FAIL);
+    CHECK_CONDITION(EVP_MAC_update(mctx, pbInfo   , cbInfo                    ), COSE_ERR_CRYPTO_FAIL);
+    CHECK_CONDITION(EVP_MAC_update(mctx, &bCount  , 1                         ), COSE_ERR_CRYPTO_FAIL);
+    CHECK_CONDITION(EVP_MAC_final (mctx, rgbDigest, &cbDigest, EVP_MAX_MD_SIZE), COSE_ERR_CRYPTO_FAIL);
+
+    memcpy(pbOutput + ib, rgbDigest, COSE_MIN(cbDigest, cbOutput - ib));
+  }
 
   EVP_MAC_CTX_free(mctx);
   EVP_MAC_free(mac);
@@ -965,20 +973,9 @@ errorReturn:
   OSSL_PARAM params[2];
   params[1] = OSSL_PARAM_construct_end();
 
-  switch (HSize)
+  if ( digest_bits_to_OSSL_PARAM( HSize, params[0] ) == false )
   {
-    case 256:
-      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
-    break;
-    case 384:
-      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
-    break;
-    case 512:
-      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
-    break;
-    default:
-      FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-    break;
+    FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
   }
 
   rgbOut = (byte *)COSE_CALLOC(EVP_MAX_MD_SIZE, 1, context);
@@ -1035,21 +1032,9 @@ errorReturn:
   OSSL_PARAM params[2];
   params[1] = OSSL_PARAM_construct_end();
 
-  switch (HSize)
+  if ( digest_bits_to_OSSL_PARAM( HSize, params[0] ) == false )
   {
-    case 256:
-      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[0]), 0);
-    break;
-    case 384:
-      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[1]), 0);
-    break;
-    case 512:
-      params[0] = OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, const_cast<char*>(g_sha_algorithms[2]), 0);
-    break;
-
-    default:
-      FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-    break;
+    FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
   }
 
   rgbOut = (byte *)COSE_CALLOC(EVP_MAX_MD_SIZE, 1, context);
