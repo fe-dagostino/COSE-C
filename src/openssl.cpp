@@ -24,6 +24,8 @@
 #include <openssl/core_names.h>
 #include <openssl/params.h>
 
+namespace {
+
 #if defined(_MSC_VER)
   #define FORCE_INLINE __forceinline
 #elif defined(__GNUC__) || defined(__clang__)
@@ -130,6 +132,8 @@ static const char* g_sha_algorithms[] = { "SHA256", "SHA384", "SHA512" };
   }
   return nullptr;
 }
+
+} /* namespace */
 
 /*******************************************/
 
@@ -268,13 +272,13 @@ errorReturn:
 }
 
 bool AES_CCM_Encrypt(COSE_Enveloped *pcose,
-	int TSize,
-	int LSize,
-	const byte *pbKey,
-	size_t cbKey,
-	const byte *pbAuthData,
-	size_t cbAuthData,
-	cose_errback *perr)
+                     int             TSize,
+                     int             LSize,
+                     const byte *    pbKey,
+                     size_t          cbKey,
+                     const byte *    pbAuthData,
+                     size_t          cbAuthData,
+                     cose_errback *  perr)
 {
   EVP_CIPHER_CTX*   ctx          = nullptr;
   int               cbCiphertext = 0;
@@ -378,102 +382,91 @@ errorReturn:
 }
 
 bool AES_GCM_Decrypt(COSE_Enveloped *pcose,
-	const byte *pbKey,
-	size_t cbKey,
-	const byte *pbCrypto,
-	size_t cbCrypto,
-	const byte *pbAuthData,
-	size_t cbAuthData,
-	cose_errback *perr)
+                     const byte *    pbKey,
+                     size_t          cbKey,
+                     const byte *    pbCrypto,
+                     size_t          cbCrypto,
+                     const byte *    pbAuthData,
+                     size_t          cbAuthData,
+                     cose_errback *  perr)
 {
-	EVP_CIPHER_CTX *ctx;
-	int cbOut;
-	byte *rgbOut = nullptr;
-	int outl = 0;
-	byte rgbIV[15] = {0};
-	const cn_cbor *pIV = nullptr;
-	const EVP_CIPHER *cipher;
+  EVP_CIPHER_CTX *  ctx;
+  int               cbOut;
+  byte *            rgbOut = nullptr;
+  int               outl = 0;
+  byte              rgbIV[15] = {0};
+  const cn_cbor *   pIV = nullptr;
+  const EVP_CIPHER *cipher;
 #ifdef USE_CBOR_CONTEXT
-	cn_cbor_context *context = &pcose->m_message.m_allocContext;
+  cn_cbor_context * context = &pcose->m_message.m_allocContext;
 #endif
-	int TSize = 128 / 8;
+  const int TSize = 128 / 8;
 
-	ctx = EVP_CIPHER_CTX_new();
-	CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
+  ctx = EVP_CIPHER_CTX_new();
+  CHECK_CONDITION(nullptr != ctx, COSE_ERR_OUT_OF_MEMORY);
 
-	//  Setup the IV/Nonce and put it into the message
+  //  Setup the IV/Nonce and put it into the message
 
-	pIV = _COSE_map_get_int(
-		&pcose->m_message, COSE_Header_IV, COSE_BOTH, nullptr);
-	if ((pIV == nullptr) || (pIV->type != CN_CBOR_BYTES)) {
-		if (perr != nullptr) {
-			perr->err = COSE_ERR_INVALID_PARAMETER;
-		}
+  pIV = _COSE_map_get_int( &pcose->m_message, COSE_Header_IV, COSE_BOTH, nullptr);
+  if ((pIV == nullptr) || (pIV->type != CN_CBOR_BYTES))
+  {
+    if (perr != nullptr)
+    {
+      perr->err = COSE_ERR_INVALID_PARAMETER;
+    }
 
-	errorReturn:
-		if (rgbOut != nullptr) {
-			COSE_FREE(rgbOut, context);
-		}
-		EVP_CIPHER_CTX_free(ctx);
-		return false;
-	}
+errorReturn:
+    if (rgbOut != nullptr)
+    {
+      COSE_FREE(rgbOut, context);
+    }
 
-	CHECK_CONDITION(pIV->length == 96 / 8, COSE_ERR_INVALID_PARAMETER);
-	memcpy(rgbIV, pIV->v.str, pIV->length);
+    EVP_CIPHER_CTX_free(ctx);
+    return false;
+  }
 
-	//  Setup and run the OpenSSL code
+  CHECK_CONDITION(pIV->length == 96 / 8, COSE_ERR_INVALID_PARAMETER);
+  memcpy(rgbIV, pIV->v.str, pIV->length);
 
-    cipher = FETCH_AES_GCM_CIPHER(cbKey);
-    if ( cipher == nullptr )
-    { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
+  //  Setup and run the OpenSSL code
 
-	//  Do the setup for OpenSSL
+  cipher = FETCH_AES_GCM_CIPHER(cbKey);
+  if ( cipher == nullptr )
+  { FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER); }
 
-	CHECK_CONDITION(EVP_DecryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr),
-		COSE_ERR_DECRYPT_FAILED);
+  //  Do the setup for OpenSSL
 
-	CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_TAG, TSize,
-						(void *)&pbCrypto[cbCrypto - TSize]),
-		COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION(EVP_DecryptInit_ex(ctx, cipher, nullptr, nullptr, nullptr), COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_CCM_SET_TAG, TSize, (void *)&pbCrypto[cbCrypto - TSize]), COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION(EVP_DecryptInit_ex(ctx, 0, nullptr, pbKey, rgbIV), COSE_ERR_DECRYPT_FAILED);
 
-	CHECK_CONDITION(EVP_DecryptInit_ex(ctx, 0, nullptr, pbKey, rgbIV),
-		COSE_ERR_DECRYPT_FAILED);
+  //  Pus in the AAD
+  CHECK_CONDITION( EVP_DecryptUpdate(ctx, nullptr, &outl, pbAuthData, (int)cbAuthData), COSE_ERR_DECRYPT_FAILED);
 
-	//  Pus in the AAD
+  //
 
-	CHECK_CONDITION(
-		EVP_DecryptUpdate(ctx, nullptr, &outl, pbAuthData, (int)cbAuthData),
-		COSE_ERR_DECRYPT_FAILED);
+  cbOut  = (int)cbCrypto - TSize;
+  rgbOut = (byte *)COSE_CALLOC(cbOut, 1, context);
+  CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	//
+  //  Process content
 
-	cbOut = (int)cbCrypto - TSize;
-	rgbOut = (byte *)COSE_CALLOC(cbOut, 1, context);
-	CHECK_CONDITION(rgbOut != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  CHECK_CONDITION( EVP_DecryptUpdate(ctx, rgbOut, &cbOut, pbCrypto, (int)cbCrypto - TSize), COSE_ERR_DECRYPT_FAILED);
 
-	//  Process content
+  //  Process Tag
 
-	CHECK_CONDITION(
-		EVP_DecryptUpdate(ctx, rgbOut, &cbOut, pbCrypto, (int)cbCrypto - TSize),
-		COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TSize, (byte *)pbCrypto + cbCrypto - TSize), COSE_ERR_DECRYPT_FAILED);
 
-	//  Process Tag
+  //  Check the result
 
-	CHECK_CONDITION(EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TSize,
-						(byte *)pbCrypto + cbCrypto - TSize),
-		COSE_ERR_DECRYPT_FAILED);
+  CHECK_CONDITION( EVP_DecryptFinal(ctx, rgbOut + cbOut, &cbOut), COSE_ERR_DECRYPT_FAILED);
 
-	//  Check the result
+  EVP_CIPHER_CTX_free(ctx);
 
-	CHECK_CONDITION(
-		EVP_DecryptFinal(ctx, rgbOut + cbOut, &cbOut), COSE_ERR_DECRYPT_FAILED);
+  pcose->pbContent = rgbOut;
+  pcose->cbContent = cbOut;
 
-	EVP_CIPHER_CTX_free(ctx);
-
-	pcose->pbContent = rgbOut;
-	pcose->cbContent = cbOut;
-
-	return true;
+  return true;
 }
 
 bool AES_GCM_Encrypt(COSE_Enveloped *pcose,
