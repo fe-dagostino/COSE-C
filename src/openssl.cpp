@@ -1160,12 +1160,14 @@ EVP_PKEY *EVP_FromKey(COSE_KEY *pKey, CBOR_CONTEXT_COMMA cose_errback *perr)
 
 EC_KEY *ECKey_From(COSE_KEY *pKey, int *cbGroup, cose_errback *perr)
 {
-	if (false) {
-	errorReturn:
-		return nullptr;
-	}
+  if (false)
+  {
+errorReturn:
+    return nullptr;
+  }
 
-	if (pKey->m_opensslKey != nullptr) {
+  if (pKey->m_opensslKey != nullptr)
+  {
 		Safe_EC_KEY pKeyNew = EVP_PKEY_get1_EC_KEY(pKey->m_opensslKey);
 		CHECK_CONDITION(pKeyNew != nullptr, COSE_ERR_INVALID_PARAMETER);
 		int gid = EC_GROUP_get_curve_name(EC_KEY_get0_group(pKeyNew));
@@ -1953,36 +1955,43 @@ void rand_bytes(byte *pb, size_t cb)
  * @returns		success of the function
  */
 
-bool ECDH_ComputeSecret(COSE *pRecipient,
-	COSE_KEY **ppKeyPrivate,
-	COSE_KEY *pKeyPublic,
-	byte **ppbSecret,
-	size_t *pcbSecret,
-	CBOR_CONTEXT_COMMA cose_errback *perr)
+bool ECDH_ComputeSecret(COSE *      pRecipient,
+                        COSE_KEY ** ppKeyPrivate,
+                        COSE_KEY *  pKeyPublic,
+                        byte **     ppbSecret,
+                        size_t *    pcbSecret,
+                        CBOR_CONTEXT_COMMA cose_errback *perr)
 {
-	EVP_PKEY *evpPublic = nullptr;
-	EVP_PKEY *evpPrivate = nullptr;
-	EVP_PKEY_CTX *ctx = nullptr;
+  EVP_PKEY *    evpPublic  = nullptr;
+  EVP_PKEY *    evpPrivate = nullptr;
+  EVP_PKEY_CTX *ctx        = nullptr;
 
-	if (false) {
-	errorReturn:
-		if (ctx != nullptr) {
-			EVP_PKEY_CTX_free(ctx);
-		}
-		if (evpPublic != nullptr) {
-			EVP_PKEY_free(evpPublic);
-		}
-		return false;
-	}
+  if (false)
+  {
+errorReturn:
+    if (ctx != nullptr) 
+    {
+      EVP_PKEY_CTX_free(ctx);
+    }
 
-	evpPublic = EVP_FromKey(pKeyPublic, CBOR_CONTEXT_PARAM_COMMA perr);
-	if (evpPublic == nullptr) {
-		goto errorReturn;
-	}
+    if (evpPublic != nullptr)
+    {
+      EVP_PKEY_free(evpPublic);
+    }
 
-	bool fCompressPoints = true;
+    return false;
+  }
 
-	if (*ppKeyPrivate == nullptr) {
+  evpPublic = EVP_FromKey(pKeyPublic, CBOR_CONTEXT_PARAM_COMMA perr);
+  if (evpPublic == nullptr)
+  {
+    goto errorReturn;
+  }
+
+  bool fCompressPoints = true;
+
+  if (*ppKeyPrivate == nullptr)
+  {
 		// Generate an ephemeral key for the key agreement.
 
 		int type = EVP_PKEY_base_id(evpPublic);
@@ -2041,30 +2050,32 @@ bool ECDH_ComputeSecret(COSE *pRecipient,
 		if (evpPrivate == nullptr) {
 			goto errorReturn;
 		}
-	}
+  }
 
-	ctx = EVP_PKEY_CTX_new(evpPrivate, nullptr);
-	CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  ctx = EVP_PKEY_CTX_new(evpPrivate, nullptr);
+  CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-	CHECK_CONDITION(EVP_PKEY_derive_init(ctx) > 0, COSE_ERR_CRYPTO_FAIL);
-	CHECK_CONDITION(
-		EVP_PKEY_derive_set_peer(ctx, evpPublic) > 0, COSE_ERR_CRYPTO_FAIL);
-	size_t skeylen;
-	CHECK_CONDITION(
-		EVP_PKEY_derive(ctx, nullptr, &skeylen) > 0, COSE_ERR_CRYPTO_FAIL);
-	byte *skey = static_cast<byte *>(COSE_CALLOC(skeylen, 1, context));
-	CHECK_CONDITION(skey != nullptr, COSE_ERR_OUT_OF_MEMORY);
-	CHECK_CONDITION(
-		EVP_PKEY_derive(ctx, skey, &skeylen) > 0, COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_PKEY_derive_init(ctx) > 0, COSE_ERR_CRYPTO_FAIL);
+  CHECK_CONDITION(EVP_PKEY_derive_set_peer(ctx, evpPublic) > 0, COSE_ERR_CRYPTO_FAIL);
 
-	if (ctx != nullptr) {
-		EVP_PKEY_CTX_free(ctx);
-	}
+  size_t skeylen;
 
-	*ppbSecret = skey;
-	*pcbSecret = skeylen;
+  CHECK_CONDITION(EVP_PKEY_derive(ctx, nullptr, &skeylen) > 0, COSE_ERR_CRYPTO_FAIL);
 
-	return true;
+  byte *skey = static_cast<byte *>(COSE_CALLOC(skeylen, 1, context));
+
+  CHECK_CONDITION(skey != nullptr, COSE_ERR_OUT_OF_MEMORY);
+  CHECK_CONDITION(EVP_PKEY_derive(ctx, skey, &skeylen) > 0, COSE_ERR_CRYPTO_FAIL);
+
+  if (ctx != nullptr)
+  {
+    EVP_PKEY_CTX_free(ctx);
+  }
+
+  *ppbSecret = skey;
+  *pcbSecret = skeylen;
+
+  return true;
 }
 
 #endif	// COSE_C_USE_OPENSSL
