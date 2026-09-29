@@ -1992,64 +1992,78 @@ errorReturn:
 
   if (*ppKeyPrivate == nullptr)
   {
-		// Generate an ephemeral key for the key agreement.
+    // Generate an ephemeral key for the key agreement.
+    int type = EVP_PKEY_base_id(evpPublic);
+    cn_cbor *pCompress = _COSE_map_get_int( pRecipient, COSE_Header_UseCompressedECDH, COSE_DONT_SEND, perr);
+    if (pCompress == nullptr)
+    {
+      fCompressPoints = true;
+    }
+    else
+    {
+      fCompressPoints = (pCompress->type == CN_CBOR_TRUE);
+    }
 
-		int type = EVP_PKEY_base_id(evpPublic);
-		cn_cbor *pCompress = _COSE_map_get_int(
-			pRecipient, COSE_Header_UseCompressedECDH, COSE_DONT_SEND, perr);
-		if (pCompress == nullptr) {
-			fCompressPoints = true;
-		}
-		else {
-			fCompressPoints = (pCompress->type == CN_CBOR_TRUE);
-		}
+    switch (type)
+    {
+      case EVP_PKEY_EC:
+      {
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_pkey(nullptr, evpPublic, nullptr);
+        CHECK_CONDITION(ctx != nullptr, COSE_ERR_OUT_OF_MEMORY);
 
-		switch (type) {
-			case EVP_PKEY_EC: {
-				EC_KEY *peckeyPrivate = EC_KEY_new();
-				const EC_KEY *peckeyPublic = EVP_PKEY_get0_EC_KEY(evpPublic);
-				EC_KEY_set_group(
-					peckeyPrivate, EC_KEY_get0_group(peckeyPublic));
-				CHECK_CONDITION( EC_KEY_generate_key(peckeyPrivate) == 1, COSE_ERR_CRYPTO_FAIL);
-				evpPrivate = EVP_PKEY_new();
-				EVP_PKEY_set1_EC_KEY(evpPrivate, peckeyPrivate);
-			} break;
+        // Initialize the context specifically for generating a new keypair
+        if (EVP_PKEY_keygen_init(ctx) <= 0)
+        {
+          EVP_PKEY_CTX_free(ctx);
+          FAIL_CONDITION(COSE_ERR_CRYPTO_FAIL);
+        }
 
-			case EVP_PKEY_X25519:
-			case EVP_PKEY_X448: {
-				EVP_PKEY_CTX *ctx2 = EVP_PKEY_CTX_new_id(type, nullptr);
-				CHECK_CONDITION(ctx2 != nullptr, COSE_ERR_OUT_OF_MEMORY);
-				// CHECK_CONDITION(
-				//	EVP_PKEY_paramgen_init(ctx2) == 1, COSE_ERR_CRYPTO_FAIL);
-				CHECK_CONDITION(
-					EVP_PKEY_keygen_init(ctx2) == 1, COSE_ERR_CRYPTO_FAIL);
-				CHECK_CONDITION(
-					EVP_PKEY_keygen(ctx2, &evpPrivate), COSE_ERR_CRYPTO_FAIL);
-			} break;
+        // Generate the new key pair directly into the evpPrivate container
+        evpPrivate = nullptr;
+        if (EVP_PKEY_keygen(ctx, &evpPrivate) <= 0)
+        {
+          EVP_PKEY_CTX_free(ctx);
+          FAIL_CONDITION(COSE_ERR_CRYPTO_FAIL);
+        }
 
-			default:
-				FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
-		}
+        // Free the context. evpPrivate now holds the fresh keypair on the same curve.
+        EVP_PKEY_CTX_free(ctx);
+      }; break;
 
-		cn_cbor *pcborPrivate = EVP_ToCBOR(
-			evpPrivate, fCompressPoints, CBOR_CONTEXT_PARAM_COMMA perr);
-		if (pcborPrivate == nullptr) {
-			goto errorReturn;
-		}
-		COSE_KEY *pPrivateKey = (COSE_KEY *)COSE_KEY_FromEVP(
-			evpPrivate, pcborPrivate, CBOR_CONTEXT_PARAM_COMMA perr);
-		if (pPrivateKey == nullptr) {
-			CN_CBOR_FREE(pcborPrivate, context);
-			goto errorReturn;
-		}
-		*ppKeyPrivate = pPrivateKey;
-	}
-	else {
-		//  Use the passed in sender key
-		evpPrivate = EVP_FromKey(*ppKeyPrivate, CBOR_CONTEXT_PARAM_COMMA perr);
-		if (evpPrivate == nullptr) {
-			goto errorReturn;
-		}
+      case EVP_PKEY_X25519:
+      case EVP_PKEY_X448:
+      {
+        EVP_PKEY_CTX *ctx2 = EVP_PKEY_CTX_new_id(type, nullptr);
+        CHECK_CONDITION(ctx2 != nullptr, COSE_ERR_OUT_OF_MEMORY);
+        // CHECK_CONDITION(
+        //	EVP_PKEY_paramgen_init(ctx2) == 1, COSE_ERR_CRYPTO_FAIL);
+        CHECK_CONDITION(EVP_PKEY_keygen_init(ctx2) == 1, COSE_ERR_CRYPTO_FAIL);
+        CHECK_CONDITION(EVP_PKEY_keygen(ctx2, &evpPrivate), COSE_ERR_CRYPTO_FAIL);
+      }; break;
+
+      default:
+        FAIL_CONDITION(COSE_ERR_INVALID_PARAMETER);
+    }
+
+    cn_cbor *pcborPrivate = EVP_ToCBOR(evpPrivate, fCompressPoints, CBOR_CONTEXT_PARAM_COMMA perr);
+    if (pcborPrivate == nullptr)
+    { goto errorReturn; }
+
+    COSE_KEY *pPrivateKey = (COSE_KEY *)COSE_KEY_FromEVP(evpPrivate, pcborPrivate, CBOR_CONTEXT_PARAM_COMMA perr);
+    if (pPrivateKey == nullptr)
+    {
+      CN_CBOR_FREE(pcborPrivate, context);
+      goto errorReturn;
+    }
+
+    *ppKeyPrivate = pPrivateKey;
+  }
+  else 
+  {
+    //  Use the passed in sender key
+    evpPrivate = EVP_FromKey(*ppKeyPrivate, CBOR_CONTEXT_PARAM_COMMA perr);
+    if (evpPrivate == nullptr)
+    { goto errorReturn; }
   }
 
   ctx = EVP_PKEY_CTX_new(evpPrivate, nullptr);
